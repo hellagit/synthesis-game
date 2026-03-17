@@ -91,6 +91,42 @@ async def start_game(code: str, x_player_id: UUID = Header(...)):
     session.status = "ACTIVE"
     return {"status": "ACTIVE", "player_count": len(session.players)}
 
+@app.get("/api/game/{code}/view")
+async def get_game_view(code: str, x_player_id: UUID = Header(...)):
+    if code not in GAMES:
+        raise HTTPException(status_code=404)
+    
+    session = GAMES[code]
+    current_player = next((p for p in session.players if p.id == x_player_id), None)
+    if not current_player:
+        raise HTTPException(status_code=403, detail="Player not in this game")
+
+    # Filtered player view: Hide secret roles unless game is over or player is an Android
+    visible_players = []
+    for p in session.players:
+        p_view = {"display_name": p.display_name, "is_host": p.is_host}
+        
+        show_role = False
+        if p.id == x_player_id: # Always see your own role
+            show_role = True
+        elif session.status == "COMPLETED": # See everyone's role at end
+            show_role = True
+        elif current_player.faction == "ANDROID" and p.faction == "ANDROID": # Androids know each other
+            show_role = True
+            
+        if show_role:
+            p_view["role"] = p.role
+            p_view["faction"] = p.faction
+            
+        visible_players.append(p_view)
+
+    return {
+        "status": session.status,
+        "players": visible_players,
+        "my_role": current_player.role,
+        "my_faction": current_player.faction
+    }
+
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
