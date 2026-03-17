@@ -43,28 +43,48 @@ class Session(BaseModel):
     players: List[Player] = []
     state: GameState = GameState()
     deck: List[str] = []
-
-# --- STORAGE ---
-GAMES: Dict[str, Session] = {}
+    recycle_bin: List[str] = []
 
 # --- ENGINE LOGIC ---
 
 def initialize_deck():
-    deck = ["EXPLOIT"] * 11 + ["PATCH"] * 6
+    # Phase 1: Fixed Deck - 11 Exploits, 5 Patches
+    deck = ["EXPLOIT"] * 11 + ["PATCH"] * 5
     random.shuffle(deck)
     return deck
 
-def assign_roles(players: List[Player]):
-    num_players = len(players)
-    num_androids = 2 if num_players >= 6 else 1
+def check_reshuffle(session: Session):
+    if len(session.deck) < 3:
+        # Phase 2: Recycle Bin Reshuffle
+        session.deck.extend(session.recycle_bin)
+        session.recycle_bin = []
+        random.shuffle(session.deck)
+
+def compile_block(session: Session, block: str, is_chaos: bool = False):
+    if block == "EXPLOIT":
+        session.state.exploits_compiled += 1
+        # Phase 4: Executive Power Balancing
+        # Only trigger power if actively compiled by Admin (not chaos)
+        if not is_chaos:
+            session.state.executive_power_available = get_executive_power(session)
+    else:
+        session.state.patches_compiled += 1
     
-    roles = (["ANDROID"] * num_androids) + (["HUMAN"] * (num_players - num_androids))
-    random.shuffle(roles)
-    
-    for i, p in enumerate(players):
-        p.role = roles[i]
-        p.faction = "ANDROID" if roles[i] == "ANDROID" else "HUMAN"
-        p.inbox.append(f"SYSTEM INITIALIZED: You are {p.role}.")
+    # Win conditions
+    if session.state.patches_compiled >= 5:
+        session.state.game_over = True
+        session.state.winner = "HUMAN"
+    elif session.state.exploits_compiled >= 6:
+        session.state.game_over = True
+        session.state.winner = "ANDROID"
+
+def get_executive_power(session: Session) -> Optional[str]:
+    # Logic for power unlocks based on exploit count
+    count = session.state.exploits_compiled
+    if count == 3: return "NETWORK_SCAN"
+    if count == 4: return "IDENTITY_PROBE"
+    if count == 5: return "FORCED_DISCONNECT"
+    return None
 
 def advance_turn(session: Session):
     session.state.lead_architect_index = (session.state.lead_architect_index + 1) % len(session.players)
@@ -72,7 +92,9 @@ def advance_turn(session: Session):
     session.state.nominated_admin_id = None
     session.state.votes = {p.id: None for p in session.players}
     session.state.drawn_blocks = []
+    # Only reset power if it wasn't used? For MVP let's just reset
     session.state.executive_power_available = None
+    check_reshuffle(session)
 
 # --- API ENDPOINTS (Backend) ---
 
@@ -179,11 +201,20 @@ async def vote(code: str, req: VoteRequest, x_player_id: UUID = Header(...)):
         approves = sum(1 for v in votes_cast if v)
         if approves > len(session.players) / 2:
             session.state.phase = "LEGISLATIVE"
+            session.state.election_tracker = 0
             # Draw 3 blocks
             session.state.drawn_blocks = [session.deck.pop(0) for _ in range(3)]
             return {"result": "PASSED"}
         else:
             session.state.election_tracker += 1
+            # Phase 3: Grid Instability (3 failed elections)
+            if session.state.election_tracker >= 3:
+                chaos_block = session.deck.pop(0)
+                compile_block(session, chaos_block, is_chaos=True)
+                session.state.election_tracker = 0
+                advance_turn(session)
+                return {"result": "CHAOS", "block": chaos_block}
+            
             advance_turn(session)
             return {"result": "FAILED"}
     return {"status": "VOTE_RECORDED"}
@@ -198,22 +229,18 @@ async def discard(code: str, req: DiscardRequest, x_player_id: UUID = Header(...
     if len(session.state.drawn_blocks) == 3: # Architect discard
         architect = session.players[session.state.lead_architect_index]
         if architect.id != x_player_id: raise HTTPException(status_code=403)
-        session.state.drawn_blocks.pop(req.index)
+        discarded = session.state.drawn_blocks.pop(req.index)
+        # Phase 2: Discard goes into Recycle Bin
+        session.recycle_bin.append(discarded)
         return {"status": "DISCARDED"}
     elif len(session.state.drawn_blocks) == 2: # Admin compile
         if session.state.nominated_admin_id != x_player_id: raise HTTPException(status_code=403)
         compiled = session.state.drawn_blocks.pop(req.index)
-        if compiled == "EXPLOIT": session.state.exploits_compiled += 1
-        else: session.state.patches_compiled += 1
+        # Remaining block also goes to recycle bin
+        session.recycle_bin.append(session.state.drawn_blocks.pop(0))
         
-        # Check Win
-        if session.state.patches_compiled >= 5:
-            session.state.game_over = True
-            session.state.winner = "HUMAN"
-        elif session.state.exploits_compiled >= 6:
-            session.state.game_over = True
-            session.state.winner = "ANDROID"
-            
+        compile_block(session, compiled, is_chaos=False)
+        
         advance_turn(session)
         return {"compiled": compiled}
     
