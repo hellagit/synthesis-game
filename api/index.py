@@ -17,18 +17,37 @@ class Player(BaseModel):
     id: UUID
     display_name: str
     is_host: bool = False
+    role: Optional[str] = None
+    faction: Optional[str] = None
 
 class Session(BaseModel):
     id: UUID
     code: str
+    status: str = "LOBBY" # LOBBY, ACTIVE, COMPLETED
     players: List[Player] = []
 
 # --- STORAGE ---
 GAMES: Dict[str, Session] = {}
 
+# --- ENGINE LOGIC ---
+def assign_roles(players: List[Player]):
+    num_players = len(players)
+    # Standard social deduction ratio: roughly 1/3 are infiltrators
+    num_androids = 2 if num_players >= 6 else 1
+    
+    roles = (["ANDROID"] * num_androids) + (["HUMAN"] * (num_players - num_androids))
+    random.shuffle(roles)
+    
+    for i, p in enumerate(players):
+        p.role = roles[i]
+        p.faction = "ANDROID" if roles[i] == "ANDROID" else "HUMAN"
+
 # --- API ENDPOINTS (Backend) ---
 class CreateRequest(BaseModel):
     host_name: str
+
+class JoinRequest(BaseModel):
+    display_name: str
 
 @app.get("/api")
 def read_root():
@@ -41,6 +60,36 @@ async def create_game(req: CreateRequest):
     session = Session(id=uuid4(), code=code, players=[host])
     GAMES[code] = session
     return {"code": code, "player_id": host.id, "session_id": session.id}
+
+@app.post("/api/game/{code}/join")
+async def join_game(code: str, req: JoinRequest):
+    if code not in GAMES:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    session = GAMES[code]
+    if session.status != "LOBBY":
+        raise HTTPException(status_code=400, detail="Game already started")
+    
+    player = Player(id=uuid4(), display_name=req.display_name)
+    session.players.append(player)
+    return {"player_id": player.id, "code": code}
+
+@app.post("/api/game/{code}/start")
+async def start_game(code: str, x_player_id: UUID = Header(...)):
+    if code not in GAMES:
+        raise HTTPException(status_code=404, detail="Game not found")
+    
+    session = GAMES[code]
+    # Simple check: only the host (first player) can start
+    if session.players[0].id != x_player_id:
+        raise HTTPException(status_code=403, detail="Only the host can start the game")
+    
+    if len(session.players) < 5:
+        raise HTTPException(status_code=400, detail="Minimum 5 players required to start")
+
+    assign_roles(session.players)
+    session.status = "ACTIVE"
+    return {"status": "ACTIVE", "player_count": len(session.players)}
 
 @app.get("/api/health")
 def health_check():
