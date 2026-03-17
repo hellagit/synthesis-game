@@ -135,7 +135,7 @@ class DiscardRequest(BaseModel):
 
 @app.get("/api")
 def read_root():
-    return {"status": "Synthesis Engine: Online", "active_games": len(GAMES)}
+    return {"status": "Synthesis Engine: Online"}
 
 @app.post("/api/game/create")
 async def create_game(req: CreateRequest):
