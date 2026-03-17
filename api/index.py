@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
-import random, os, time
+import random, os, time, traceback
 
 # Get base directory of the project
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +20,7 @@ class Player(BaseModel):
     is_alive: bool = True
     role: Optional[str] = None
     faction: Optional[str] = None
-    inbox: List[str] = []
+    inbox: List[str] = Field(default_factory=list)
 
 class GameState(BaseModel):
     phase: str = "LOBBY"
@@ -30,8 +30,8 @@ class GameState(BaseModel):
     patches_compiled: int = 0
     exploits_compiled: int = 0
     election_tracker: int = 0
-    drawn_blocks: List[str] = []
-    votes: Dict[str, Optional[bool]] = {} # Use string for UUID keys
+    drawn_blocks: List[str] = Field(default_factory=list)
+    votes: Dict[str, Optional[bool]] = Field(default_factory=dict)
     game_over: bool = False
     winner: Optional[str] = None
     executive_power_available: Optional[str] = None
@@ -40,22 +40,47 @@ class Session(BaseModel):
     id: UUID
     code: str
     status: str = "LOBBY"
-    players: List[Player] = []
-    state: GameState = GameState()
-    deck: List[str] = []
-    recycle_bin: List[str] = []
+    players: List[Player] = Field(default_factory=list)
+    state: GameState = Field(default_factory=GameState)
+    deck: List[str] = Field(default_factory=list)
+    recycle_bin: List[str] = Field(default_factory=list)
+
+# --- STORAGE ---
+GAMES: Dict[str, Session] = {}
+
+# --- GLOBAL EXCEPTION HANDLER ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": str(exc),
+            "traceback": traceback.format_exc(),
+            "path": request.url.path
+        }
+    )
 
 # --- ENGINE LOGIC ---
 
 def initialize_deck():
-    # Phase 1: Fixed Deck - 11 Exploits, 5 Patches
     deck = ["EXPLOIT"] * 11 + ["PATCH"] * 5
     random.shuffle(deck)
     return deck
 
+def assign_roles(players: List[Player]):
+    num_players = len(players)
+    num_androids = 2 if num_players >= 6 else 1
+    
+    roles = (["ANDROID"] * num_androids) + (["HUMAN"] * (num_players - num_androids))
+    random.shuffle(roles)
+    
+    for i, p in enumerate(players):
+        p.role = roles[i]
+        p.faction = "ANDROID" if roles[i] == "ANDROID" else "HUMAN"
+        p.inbox.append(f"SYSTEM INITIALIZED: You are {p.role}.")
+
 def check_reshuffle(session: Session):
     if len(session.deck) < 3:
-        # Phase 2: Recycle Bin Reshuffle
         session.deck.extend(session.recycle_bin)
         session.recycle_bin = []
         random.shuffle(session.deck)
@@ -63,14 +88,11 @@ def check_reshuffle(session: Session):
 def compile_block(session: Session, block: str, is_chaos: bool = False):
     if block == "EXPLOIT":
         session.state.exploits_compiled += 1
-        # Phase 4: Executive Power Balancing
-        # Only trigger power if actively compiled by Admin (not chaos)
         if not is_chaos:
             session.state.executive_power_available = get_executive_power(session)
     else:
         session.state.patches_compiled += 1
     
-    # Win conditions
     if session.state.patches_compiled >= 5:
         session.state.game_over = True
         session.state.winner = "HUMAN"
@@ -79,7 +101,6 @@ def compile_block(session: Session, block: str, is_chaos: bool = False):
         session.state.winner = "ANDROID"
 
 def get_executive_power(session: Session) -> Optional[str]:
-    # Logic for power unlocks based on exploit count
     count = session.state.exploits_compiled
     if count == 3: return "NETWORK_SCAN"
     if count == 4: return "IDENTITY_PROBE"
@@ -92,7 +113,6 @@ def advance_turn(session: Session):
     session.state.nominated_admin_id = None
     session.state.votes = {str(p.id): None for p in session.players}
     session.state.drawn_blocks = []
-    # Only reset power if it wasn't used? For MVP let's just reset
     session.state.executive_power_available = None
     check_reshuffle(session)
 
@@ -201,29 +221,25 @@ async def vote(code: str, req: VoteRequest, x_player_id: UUID = Header(...)):
     
     session.state.votes[str(x_player_id)] = req.approve
     
-    # Check if all voted
     votes_cast = [v for v in session.state.votes.values() if v is not None]
     if len(votes_cast) == len(session.players):
         approves = sum(1 for v in votes_cast if v)
         if approves > len(session.players) / 2:
             session.state.phase = "LEGISLATIVE"
             session.state.election_tracker = 0
-            # Draw 3 blocks
             session.state.drawn_blocks = [session.deck.pop(0) for _ in range(3)]
             return {"result": "PASSED"}
         else:
             session.state.election_tracker += 1
-            # Add to inbox for all players
             for p in session.players:
-                p.inbox.append(f"GRID INSTABILITY DETECTED: Level {session.state.election_tracker}/3. Election failure detected.")
+                p.inbox.append(f"GRID INSTABILITY DETECTED: Level {session.state.election_tracker}/3.")
             
-            # Phase 3: Grid Instability (3 failed elections)
             if session.state.election_tracker >= 3:
                 chaos_block = session.deck.pop(0)
                 compile_block(session, chaos_block, is_chaos=True)
                 session.state.election_tracker = 0
                 for p in session.players:
-                    p.inbox.append(f"SYSTEM OVERLOAD: Forced compile of top Code Block: {chaos_block}. Stability reset.")
+                    p.inbox.append(f"SYSTEM OVERLOAD: Forced compile {chaos_block}.")
                 advance_turn(session)
                 return {"result": "CHAOS", "block": chaos_block}
             
@@ -237,22 +253,17 @@ async def discard(code: str, req: DiscardRequest, x_player_id: UUID = Header(...
     if not session: raise HTTPException(status_code=404)
     if session.state.phase != "LEGISLATIVE": raise HTTPException(status_code=400)
     
-    # Simple check for demo: index 0, 1, or 2
-    if len(session.state.drawn_blocks) == 3: # Architect discard
+    if len(session.state.drawn_blocks) == 3: # Architect
         architect = session.players[session.state.lead_architect_index]
         if architect.id != x_player_id: raise HTTPException(status_code=403)
         discarded = session.state.drawn_blocks.pop(req.index)
-        # Phase 2: Discard goes into Recycle Bin
         session.recycle_bin.append(discarded)
         return {"status": "DISCARDED"}
-    elif len(session.state.drawn_blocks) == 2: # Admin compile
+    elif len(session.state.drawn_blocks) == 2: # Admin
         if session.state.nominated_admin_id != x_player_id: raise HTTPException(status_code=403)
         compiled = session.state.drawn_blocks.pop(req.index)
-        # Remaining block also goes to recycle bin
         session.recycle_bin.append(session.state.drawn_blocks.pop(0))
-        
         compile_block(session, compiled, is_chaos=False)
-        
         advance_turn(session)
         return {"compiled": compiled}
     
@@ -265,7 +276,10 @@ def health_check():
 # --- FRONTEND SERVING ---
 @app.get("/")
 async def serve_index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse({"status": "error", "message": "Frontend not found", "path": index_path})
 
 @app.get("/assets/{file_path:path}")
 async def serve_assets(file_path: str):
@@ -276,5 +290,7 @@ async def serve_assets(file_path: str):
 @app.exception_handler(404)
 async def custom_404_handler(request, __):
     if not request.url.path.startswith("/api"):
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        index_path = os.path.join(STATIC_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
     return JSONResponse(status_code=404, content={"detail": "Not Found"})
