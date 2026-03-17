@@ -171,7 +171,13 @@ async def get_view(code: str, x_player_id: UUID = Header(...)):
         "state": session.state,
         "my_role": player.role,
         "my_faction": player.faction,
-        "inbox": player.inbox
+        "inbox": player.inbox,
+        "instability": {
+            "level": session.state.election_tracker,
+            "max": 3,
+            "percent": (session.state.election_tracker / 3) * 100,
+            "status": "DANGER" if session.state.election_tracker >= 2 else "STABLE"
+        }
     }
 
 @app.post("/api/game/{code}/nominate")
@@ -207,11 +213,17 @@ async def vote(code: str, req: VoteRequest, x_player_id: UUID = Header(...)):
             return {"result": "PASSED"}
         else:
             session.state.election_tracker += 1
+            # Add to inbox for all players
+            for p in session.players:
+                p.inbox.append(f"GRID INSTABILITY DETECTED: Level {session.state.election_tracker}/3. Election failure detected.")
+            
             # Phase 3: Grid Instability (3 failed elections)
             if session.state.election_tracker >= 3:
                 chaos_block = session.deck.pop(0)
                 compile_block(session, chaos_block, is_chaos=True)
                 session.state.election_tracker = 0
+                for p in session.players:
+                    p.inbox.append(f"SYSTEM OVERLOAD: Forced compile of top Code Block: {chaos_block}. Stability reset.")
                 advance_turn(session)
                 return {"result": "CHAOS", "block": chaos_block}
             

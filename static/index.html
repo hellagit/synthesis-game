@@ -26,8 +26,80 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script type="module" crossorigin src="./assets/index-By_aoyhI.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-CloJTZ0z.css">
+    <style>
+      #instability-bar-container {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        width: 200px;
+        background: rgba(0, 0, 0, 0.8);
+        border: 1px solid #821517;
+        padding: 10px;
+        z-index: 9999;
+        font-family: 'JetBrains Mono', monospace;
+        color: #fefefe;
+        font-size: 10px;
+        pointer-events: none;
+      }
+      #instability-bar {
+        height: 6px;
+        background: #333;
+        margin-top: 5px;
+        position: relative;
+      }
+      #instability-fill {
+        height: 100%;
+        background: #821517;
+        width: 0%;
+        transition: width 0.3s ease;
+      }
+      .instability-label {
+        display: flex;
+        justify-content: space-between;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="instability-bar-container">
+      <div class="instability-label">
+        <span>GRID STABILITY</span>
+        <span id="instability-text">0/3</span>
+      </div>
+      <div id="instability-bar">
+        <div id="instability-fill"></div>
+      </div>
+    </div>
+    <script>
+      // Simple loop to poll game state and update the bar
+      setInterval(async () => {
+        const playerID = localStorage.getItem('synthesis_player_id');
+        const gameCode = localStorage.getItem('synthesis_game_code');
+        if (!playerID || !gameCode) {
+          document.getElementById('instability-bar-container').style.display = 'none';
+          return;
+        }
+        try {
+          const res = await fetch(`/api/game/${gameCode}/view`, {
+            headers: { 'X-Player-ID': playerID }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const level = data.instability.level;
+            document.getElementById('instability-bar-container').style.display = 'block';
+            document.getElementById('instability-text').innerText = `${level}/3`;
+            document.getElementById('instability-fill').style.width = `${(level/3)*100}%`;
+            
+            if (level >= 2) {
+              document.getElementById('instability-fill').style.background = '#ff0000';
+              document.getElementById('instability-bar-container').style.borderColor = '#ff0000';
+            } else {
+              document.getElementById('instability-fill').style.background = '#821517';
+              document.getElementById('instability-bar-container').style.borderColor = '#821517';
+            }
+          }
+        } catch (e) {}
+      }, 2000);
+    </script>
   </body>
 </html>
