@@ -31,7 +31,7 @@ class GameState(BaseModel):
     exploits_compiled: int = 0
     election_tracker: int = 0
     drawn_blocks: List[str] = []
-    votes: Dict[UUID, Optional[bool]] = {}
+    votes: Dict[str, Optional[bool]] = {} # Use string for UUID keys
     game_over: bool = False
     winner: Optional[str] = None
     executive_power_available: Optional[str] = None
@@ -90,7 +90,7 @@ def advance_turn(session: Session):
     session.state.lead_architect_index = (session.state.lead_architect_index + 1) % len(session.players)
     session.state.phase = "NOMINATION"
     session.state.nominated_admin_id = None
-    session.state.votes = {p.id: None for p in session.players}
+    session.state.votes = {str(p.id): None for p in session.players}
     session.state.drawn_blocks = []
     # Only reset power if it wasn't used? For MVP let's just reset
     session.state.executive_power_available = None
@@ -145,7 +145,7 @@ async def start_game(code: str, x_player_id: UUID = Header(...)):
     session.deck = initialize_deck()
     session.status = "ACTIVE"
     session.state.phase = "NOMINATION"
-    session.state.votes = {p.id: None for p in session.players}
+    session.state.votes = {str(p.id): None for p in session.players}
     return {"status": "STARTED"}
 
 @app.get("/api/game/{code}/view")
@@ -199,7 +199,7 @@ async def vote(code: str, req: VoteRequest, x_player_id: UUID = Header(...)):
     if not session: raise HTTPException(status_code=404)
     if session.state.phase != "ELECTION": raise HTTPException(status_code=400)
     
-    session.state.votes[x_player_id] = req.approve
+    session.state.votes[str(x_player_id)] = req.approve
     
     # Check if all voted
     votes_cast = [v for v in session.state.votes.values() if v is not None]
