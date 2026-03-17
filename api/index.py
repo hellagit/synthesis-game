@@ -69,15 +69,18 @@ def initialize_deck():
 
 def assign_roles(players: List[Player]):
     num_players = len(players)
-    num_androids = 2 if num_players >= 6 else 1
+    if num_players >= 7: num_androids = 3
+    elif num_players >= 5: num_androids = 2
+    else: num_androids = 1 
     
-    roles = (["ANDROID"] * num_androids) + (["HUMAN"] * (num_players - num_androids))
-    random.shuffle(roles)
+    # 1 Alpha Construct, rest are Rogue Androids
+    roles_list = ["ALPHA_CONSTRUCT"] + (["ROGUE_ANDROID"] * (num_androids - 1)) + (["HUMAN_RESISTANCE"] * (num_players - num_androids))
+    random.shuffle(roles_list)
     
     for i, p in enumerate(players):
-        p.role = roles[i]
-        p.faction = "ANDROID" if roles[i] == "ANDROID" else "HUMAN"
-        p.inbox.append(f"SYSTEM INITIALIZED: You are {p.role}.")
+        p.role = roles_list[i]
+        p.faction = "ANDROID" if p.role in ["ALPHA_CONSTRUCT", "ROGUE_ANDROID"] else "HUMAN"
+        p.inbox.append(f"MISSION START: Your role is {p.role}.")
 
 def check_reshuffle(session: Session):
     if len(session.deck) < 3:
@@ -135,7 +138,7 @@ class DiscardRequest(BaseModel):
 
 @app.get("/api")
 def read_root():
-    return {"status": "Synthesis Engine: Online"}
+    return {"status": "Synthesis Engine: Online", "active_games": len(GAMES)}
 
 @app.post("/api/game/create")
 async def create_game(req: CreateRequest):
@@ -172,15 +175,31 @@ async def start_game(code: str, x_player_id: UUID = Header(...)):
 async def get_view(code: str, x_player_id: UUID = Header(...)):
     if code not in GAMES: raise HTTPException(status_code=404)
     session = GAMES[code]
-    player = next((p for p in session.players if p.id == x_player_id), None)
-    if not player: raise HTTPException(status_code=403)
+    current_player = next((p for p in session.players if p.id == x_player_id), None)
+    if not current_player: raise HTTPException(status_code=403)
     
     visible_players = []
     for p in session.players:
         p_view = {"id": p.id, "name": p.display_name, "is_host": p.is_host, "is_alive": p.is_alive}
-        if p.id == x_player_id or (player.faction == "ANDROID" and p.faction == "ANDROID"):
+        
+        # Determine visibility
+        show_role = False
+        if p.id == x_player_id:
+            show_role = True
+        elif session.status == "COMPLETED":
+            show_role = True
+        elif current_player.role == "ROGUE_ANDROID":
+            # Rogue Androids know each other AND the Alpha Construct
+            if p.faction == "ANDROID":
+                show_role = True
+        elif current_player.role == "ALPHA_CONSTRUCT":
+            # Alpha Construct knows no one (Plausible Deniability)
+            pass
+            
+        if show_role:
             p_view["role"] = p.role
             p_view["faction"] = p.faction
+            
         visible_players.append(p_view)
         
     return {
@@ -189,9 +208,9 @@ async def get_view(code: str, x_player_id: UUID = Header(...)):
         "phase": session.state.phase,
         "players": visible_players,
         "state": session.state,
-        "my_role": player.role,
-        "my_faction": player.faction,
-        "inbox": player.inbox,
+        "my_role": current_player.role,
+        "my_faction": current_player.faction,
+        "inbox": current_player.inbox,
         "instability": {
             "level": session.state.election_tracker,
             "max": 3,
