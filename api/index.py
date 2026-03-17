@@ -6,6 +6,10 @@ from typing import List, Optional, Dict
 from uuid import UUID, uuid4
 import random, os
 
+# Get base directory of the project
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
 app = FastAPI()
 
 # --- DATA MODELS ---
@@ -47,12 +51,13 @@ def health_check():
 # Serve index.html at root
 @app.get("/")
 async def serve_index():
-    return FileResponse("static/index.html")
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    return FileResponse(index_path)
 
 # Serve static assets manually to avoid StaticFiles complexity on some serverless builds
 @app.get("/assets/{file_path:path}")
 async def serve_assets(file_path: str):
-    full_path = f"static/assets/{file_path}"
+    full_path = os.path.join(STATIC_DIR, "assets", file_path)
     if os.path.exists(full_path):
         return FileResponse(full_path)
     raise HTTPException(status_code=404)
@@ -61,5 +66,6 @@ async def serve_assets(file_path: str):
 @app.exception_handler(404)
 async def custom_404_handler(request, __):
     if not request.url.path.startswith("/api"):
-        return FileResponse("static/index.html")
+        index_path = os.path.join(STATIC_DIR, "index.html")
+        return FileResponse(index_path)
     return JSONResponse(status_code=404, content={"detail": "Not Found"})
