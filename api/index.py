@@ -154,23 +154,12 @@ async def create_game(request: Request):
 
 @app.post("/api/games/join")
 async def join_game(request: Request):
-    try:
-        body = await request.json()
-    except:
-        body = {}
-        
+    body = await request.json()
     join_code = body.get("joinCode")
-    if not join_code:
-        # Check if it's in a different field or query param
-        join_code = request.query_params.get("joinCode")
-        
     player_name = body.get("playerName", "Operative")
     
     session = next((s for s in GAMES.values() if s.joinCode == join_code), None)
-    if not session: 
-        # Debugging: List active codes
-        active_codes = [s.joinCode for s in GAMES.values()]
-        raise HTTPException(status_code=404, detail=f"Game not found. Active codes: {active_codes}")
+    if not session: raise HTTPException(status_code=404, detail="Game not found")
     
     player = Player(id=str(uuid4()), name=player_name)
     session.players.append(player)
@@ -292,7 +281,9 @@ async def serve_assets(file_path: str):
 
 # Catch-all for React routing
 @app.exception_handler(404)
-async def custom_404_handler(request, __):
+async def custom_404_handler(request: Request, __):
     if not request.url.path.startswith("/api"):
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        index_path = os.path.join(STATIC_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
     return JSONResponse(status_code=404, content={"detail": "Not Found"})

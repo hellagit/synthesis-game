@@ -80,12 +80,17 @@
           return;
         }
         try {
-          const res = await fetch(`/api/game/${gameCode}/view`, {
+          // Fix: Ensure we hit /api/games/{id} or similar as expected by the backend
+          // The UI might use synthesis_game_id for the dynamic part
+          const gameID = localStorage.getItem('synthesis_game_id');
+          if (!gameID) return;
+
+          const res = await fetch(`/api/games/${gameID}`, {
             headers: { 'X-Player-ID': playerID }
           });
           if (res.ok) {
             const data = await res.json();
-            const level = data.instability.level;
+            const level = data.round?.failedElections || 0;
             document.getElementById('instability-bar-container').style.display = 'block';
             document.getElementById('instability-text').innerText = `${level}/3`;
             document.getElementById('instability-fill').style.width = `${(level/3)*100}%`;
@@ -101,5 +106,8 @@
         } catch (e) {}
       }, 2000);
     </script>
+    <div style="position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.3); z-index: 100;">
+      Built by <a href="https://www.linkedin.com/in/aaheller/" target="_blank" style="color: #0077b5; text-decoration: none;">Andrew Heller</a>
+    </div>
   </body>
 </html>
