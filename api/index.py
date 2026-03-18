@@ -132,9 +132,8 @@ def advance_lead_architect(session: GameSession):
 # --- API ENDPOINTS ---
 
 @app.post("/api/games")
-async def create_game(req: Any = None, request: Request = None):
-    # Flexible request handling for different frontend versions
-    body = await request.json() if request else {}
+async def create_game(request: Request):
+    body = await request.json()
     host_name = body.get("hostName", "Operator")
     config_data = body.get("config", {})
     
@@ -154,9 +153,10 @@ async def create_game(req: Any = None, request: Request = None):
     return session
 
 @app.post("/api/games/join")
-async def join_game(req: Dict[str, str]):
-    join_code = req.get("joinCode")
-    player_name = req.get("playerName", "Operative")
+async def join_game(request: Request):
+    body = await request.json()
+    join_code = body.get("joinCode")
+    player_name = body.get("playerName", "Operative")
     
     session = next((s for s in GAMES.values() if s.joinCode == join_code), None)
     if not session: raise HTTPException(status_code=404, detail="Game not found")
@@ -165,49 +165,51 @@ async def join_game(req: Dict[str, str]):
     session.players.append(player)
     return {"gameId": session.id, "player": player}
 
-@app.get("/api/games/{id}")
-async def get_game(id: str):
-    if id not in GAMES: raise HTTPException(status_code=404)
-    return GAMES[id]
+@app.get("/api/games/{game_id}")
+async def get_game(game_id: str):
+    if game_id not in GAMES: raise HTTPException(status_code=404)
+    return GAMES[game_id]
 
-@app.get("/api/games/{id}/player/{playerId}")
-async def get_game_for_player(id: str, playerId: str):
-    if id not in GAMES: raise HTTPException(status_code=404)
-    return GAMES[id] # In a real game, we'd filter roles here
+@app.get("/api/games/{game_id}/player/{playerId}")
+async def get_game_for_player(game_id: str, playerId: str):
+    if game_id not in GAMES: raise HTTPException(status_code=404)
+    return GAMES[game_id]
 
-@app.post("/api/games/{id}/start")
-async def start_game(id: str):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/start")
+async def start_game(game_id: str):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
     assign_roles(session)
     session.deck = initialize_deck()
     session.phase = "briefing"
     return session
 
-@app.post("/api/games/{id}/deliberate")
-async def begin_deliberation(id: str):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/deliberate")
+async def begin_deliberation(game_id: str):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
     session.phase = "deliberation"
     session.round.leadArchitectId = session.players[0].id
     return session
 
-@app.post("/api/games/{id}/nominate")
-async def nominate(id: str, req: Dict[str, str]):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/nominate")
+async def nominate(game_id: str, request: Request):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
-    session.round.nominatedAdminId = req.get("rootAdminId")
+    body = await request.json()
+    session.round.nominatedAdminId = body.get("rootAdminId")
     session.phase = "election"
     session.round.electionVotes = []
     return session
 
-@app.post("/api/games/{id}/vote/{playerId}")
-async def cast_vote(id: str, playerId: str, req: Dict[str, bool]):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/vote/{playerId}")
+async def cast_vote(game_id: str, playerId: str, request: Request):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
+    body = await request.json()
     
     session.round.electionVotes = [v for v in session.round.electionVotes if v.playerId != playerId]
-    session.round.electionVotes.append(Vote(playerId=playerId, approve=req.get("approve", False)))
+    session.round.electionVotes.append(Vote(playerId=playerId, approve=body.get("approve", False)))
     
     alive_voters = [p for p in session.players if p.isAlive and not p.isOverridden]
     if len(session.round.electionVotes) >= len(alive_voters):
@@ -228,19 +230,21 @@ async def cast_vote(id: str, playerId: str, req: Dict[str, bool]):
             session.phase = "deliberation"
     return session
 
-@app.post("/api/games/{id}/discard")
-async def architect_discard(id: str, req: Dict[str, int]):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/discard")
+async def architect_discard(game_id: str, request: Request):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
-    session.round.architectDiscarded = req.get("index")
+    body = await request.json()
+    session.round.architectDiscarded = body.get("index")
     return session
 
-@app.post("/api/games/{id}/compile")
-async def admin_compile(id: str, req: Dict[str, int]):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/compile")
+async def admin_compile(game_id: str, request: Request):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
+    body = await request.json()
     remaining = [b for i, b in enumerate(session.round.codeBlocks) if i != session.round.architectDiscarded]
-    compiled = remaining[req.get("index", 0)]
+    compiled = remaining[body.get("index", 0)]
     if compiled == "patch": session.patches += 1
     else: session.exploits += 1
     
@@ -253,9 +257,9 @@ async def admin_compile(id: str, req: Dict[str, int]):
         session.round.architectDiscarded = None
     return session
 
-@app.post("/api/games/{id}/blackout")
-async def toggle_blackout(id: str):
-    session = GAMES.get(id)
+@app.post("/api/games/{game_id}/blackout")
+async def toggle_blackout(game_id: str):
+    session = GAMES.get(game_id)
     if not session: raise HTTPException(status_code=404)
     session.isBlackoutWindow = not session.isBlackoutWindow
     return session
@@ -275,6 +279,7 @@ async def serve_assets(file_path: str):
     if os.path.exists(full_path): return FileResponse(full_path)
     raise HTTPException(status_code=404)
 
+# Catch-all for React routing
 @app.exception_handler(404)
 async def custom_404_handler(request, __):
     if not request.url.path.startswith("/api"):
