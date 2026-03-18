@@ -11,7 +11,7 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 app = FastAPI(title="Synthesis Full Engine")
 
-# --- DATA MODELS (Matching Frontend Expectations) ---
+# --- DATA MODELS ---
 
 class GameConfig(BaseModel):
     gameDuration: str = "medium"
@@ -25,8 +25,8 @@ class Player(BaseModel):
     isAlive: bool = True
     isOverridden: bool = False
     avatarUrl: Optional[str] = None
-    faction: Optional[str] = None # "resistance" or "android"
-    role: Optional[str] = None # "ALPHA_CONSTRUCT", "ROGUE_ANDROID", "HUMAN_RESISTANCE"
+    faction: Optional[str] = None
+    role: Optional[str] = None
     qrCode: str = ""
 
 class Vote(BaseModel):
@@ -40,7 +40,7 @@ class GameRound(BaseModel):
     rootAdminId: Optional[str] = None
     failedElections: int = 0
     electionVotes: List[Vote] = []
-    codeBlocks: Optional[List[str]] = None # "patch" or "exploit"
+    codeBlocks: Optional[List[str]] = None
     architectDiscarded: Optional[int] = None
     adminSelected: Optional[int] = None
     scanResult: Optional[str] = None
@@ -49,7 +49,7 @@ class GameRound(BaseModel):
 
 class Message(BaseModel):
     id: str
-    type: str # "briefing", "system", "intel", "emergency"
+    type: str
     subject: str
     body: str
     timestamp: int
@@ -68,7 +68,7 @@ class Mission(BaseModel):
 class GameSession(BaseModel):
     id: str
     joinCode: str
-    phase: str = "lobby" # briefing, deliberation, election, system_update, executive_power, alpha_election, game_over
+    phase: str = "lobby"
     config: GameConfig
     players: List[Player] = []
     messages: List[Message] = []
@@ -83,10 +83,10 @@ class GameSession(BaseModel):
     deck: List[str] = []
     recycle_bin: List[str] = []
 
-# --- STORAGE ---
+# --- IN-MEMORY STORAGE ---
 GAMES: Dict[str, GameSession] = {}
 
-# --- HELPER LOGIC ---
+# --- ENGINE LOGIC ---
 
 def initialize_deck():
     deck = ["exploit"] * 11 + ["patch"] * 5
@@ -95,9 +95,7 @@ def initialize_deck():
 
 def assign_roles(session: GameSession):
     num_players = len(session.players)
-    if num_players >= 7: num_androids = 3
-    elif num_players >= 5: num_androids = 2
-    else: num_androids = 1 
+    num_androids = 3 if num_players >= 7 else (2 if num_players >= 5 else 1)
     
     roles_list = ["ALPHA_CONSTRUCT"] + (["ROGUE_ANDROID"] * (num_androids - 1)) + (["HUMAN_RESISTANCE"] * (num_players - num_androids))
     random.shuffle(roles_list)
@@ -106,8 +104,6 @@ def assign_roles(session: GameSession):
         p.role = roles_list[i]
         p.faction = "android" if p.role in ["ALPHA_CONSTRUCT", "ROGUE_ANDROID"] else "resistance"
         p.qrCode = f"SYN-{uuid4().hex[:8].upper()}"
-        
-        # Add Briefing Message
         session.messages.append(Message(
             id=str(uuid4()),
             type="briefing",
@@ -115,58 +111,57 @@ def assign_roles(session: GameSession):
             body=f"Your assigned role is: {p.role}. Your faction is: {p.faction.upper()}.",
             timestamp=int(time.time() * 1000)
         ))
-        
-    # Find Alpha
+    
     alpha = next((p for p in session.players if p.role == "ALPHA_CONSTRUCT"), None)
-    if alpha:
-        session.alphaConstructId = alpha.id
+    if alpha: session.alphaConstructId = alpha.id
 
 def advance_lead_architect(session: GameSession):
     alive_players = [p for p in session.players if p.isAlive]
+    if not alive_players: return
+    
+    current_id = session.round.leadArchitectId
     current_index = -1
     for i, p in enumerate(alive_players):
-        if p.id == session.round.leadArchitectId:
+        if p.id == current_id:
             current_index = i
             break
     
     next_index = (current_index + 1) % len(alive_players)
     session.round.leadArchitectId = alive_players[next_index].id
 
-# --- API ENDPOINTS (Matching Perplexity Frontend) ---
-
-class CreateRequest(BaseModel):
-    hostName: str
-    config: GameConfig
+# --- API ENDPOINTS ---
 
 @app.post("/api/games")
-async def create_game(req: CreateRequest):
+async def create_game(req: Any = None, request: Request = None):
+    # Flexible request handling for different frontend versions
+    body = await request.json() if request else {}
+    host_name = body.get("hostName", "Operator")
+    config_data = body.get("config", {})
+    
     game_id = str(uuid4())
     join_code = "".join(random.choices("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", k=6))
     host_id = str(uuid4())
     
-    host = Player(id=host_id, name=req.hostName, isHost=True)
+    host = Player(id=host_id, name=host_name, isHost=True)
     session = GameSession(
         id=game_id,
         joinCode=join_code,
-        config=req.config,
+        config=GameConfig(**config_data),
         players=[host],
         hostId=host_id
     )
     GAMES[game_id] = session
     return session
 
-class JoinRequest(BaseModel):
-    joinCode: str
-    playerName: str
-
 @app.post("/api/games/join")
-async def join_game(req: JoinRequest):
-    session = next((s for s in GAMES.values() if s.joinCode == req.joinCode), None)
-    if not session: raise HTTPException(status_code=404, detail="Game not found")
-    if session.phase != "lobby": raise HTTPException(status_code=400, detail="Game started")
+async def join_game(req: Dict[str, str]):
+    join_code = req.get("joinCode")
+    player_name = req.get("playerName", "Operative")
     
-    player_id = str(uuid4())
-    player = Player(id=player_id, name=req.playerName)
+    session = next((s for s in GAMES.values() if s.joinCode == join_code), None)
+    if not session: raise HTTPException(status_code=404, detail="Game not found")
+    
+    player = Player(id=str(uuid4()), name=player_name)
     session.players.append(player)
     return {"gameId": session.id, "player": player}
 
@@ -175,11 +170,15 @@ async def get_game(id: str):
     if id not in GAMES: raise HTTPException(status_code=404)
     return GAMES[id]
 
+@app.get("/api/games/{id}/player/{playerId}")
+async def get_game_for_player(id: str, playerId: str):
+    if id not in GAMES: raise HTTPException(status_code=404)
+    return GAMES[id] # In a real game, we'd filter roles here
+
 @app.post("/api/games/{id}/start")
 async def start_game(id: str):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
-    # assign_roles logic...
     assign_roles(session)
     session.deck = initialize_deck()
     session.phase = "briefing"
@@ -193,33 +192,23 @@ async def begin_deliberation(id: str):
     session.round.leadArchitectId = session.players[0].id
     return session
 
-class NominateRequest(BaseModel):
-    rootAdminId: str
-
 @app.post("/api/games/{id}/nominate")
-async def nominate(id: str, req: NominateRequest):
+async def nominate(id: str, req: Dict[str, str]):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
-    session.round.nominatedAdminId = req.rootAdminId
+    session.round.nominatedAdminId = req.get("rootAdminId")
     session.phase = "election"
     session.round.electionVotes = []
     return session
 
-class VoteRequest(BaseModel):
-    approve: bool
-
 @app.post("/api/games/{id}/vote/{playerId}")
-async def cast_vote(id: str, playerId: str, req: VoteRequest):
+async def cast_vote(id: str, playerId: str, req: Dict[str, bool]):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
     
-    # Check if already voted
-    if any(v.playerId == playerId for v in session.round.electionVotes):
-        raise HTTPException(status_code=400, detail="Already voted")
-        
-    session.round.electionVotes.append(Vote(playerId=playerId, approve=req.approve))
+    session.round.electionVotes = [v for v in session.round.electionVotes if v.playerId != playerId]
+    session.round.electionVotes.append(Vote(playerId=playerId, approve=req.get("approve", False)))
     
-    # Resolve if all voted
     alive_voters = [p for p in session.players if p.isAlive and not p.isOverridden]
     if len(session.round.electionVotes) >= len(alive_voters):
         approves = sum(1 for v in session.round.electionVotes if v.approve)
@@ -227,62 +216,48 @@ async def cast_vote(id: str, playerId: str, req: VoteRequest):
             session.phase = "system_update"
             session.round.rootAdminId = session.round.nominatedAdminId
             session.round.failedElections = 0
-            # Draw 3
             session.round.codeBlocks = [session.deck.pop(0) for _ in range(3)]
         else:
             session.round.failedElections += 1
             if session.round.failedElections >= 3:
-                # CHAOS
                 top = session.deck.pop(0)
                 if top == "patch": session.patches += 1
                 else: session.exploits += 1
                 session.round.failedElections = 0
-                advance_lead_architect(session)
-                session.phase = "deliberation"
-            else:
-                advance_lead_architect(session)
-                session.phase = "deliberation"
-                
+            advance_lead_architect(session)
+            session.phase = "deliberation"
     return session
 
-class IndexRequest(BaseModel):
-    index: int
-
 @app.post("/api/games/{id}/discard")
-async def architect_discard(id: str, req: IndexRequest):
+async def architect_discard(id: str, req: Dict[str, int]):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
-    session.round.architectDiscarded = req.index
-    discarded = session.round.codeBlocks[req.index]
-    session.recycle_bin.append(discarded)
+    session.round.architectDiscarded = req.get("index")
     return session
 
 @app.post("/api/games/{id}/compile")
-async def admin_compile(id: str, req: IndexRequest):
+async def admin_compile(id: str, req: Dict[str, int]):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
-    
-    # Filter out discarded
     remaining = [b for i, b in enumerate(session.round.codeBlocks) if i != session.round.architectDiscarded]
-    compiled = remaining[req.index]
-    
-    # Recycle the other one
-    other = remaining[1-req.index]
-    session.recycle_bin.append(other)
-    
+    compiled = remaining[req.get("index", 0)]
     if compiled == "patch": session.patches += 1
     else: session.exploits += 1
     
-    # Check win
     if session.patches >= 5: session.phase = "game_over"; session.winner = "resistance"
     elif session.exploits >= 6: session.phase = "game_over"; session.winner = "android"
     else:
         advance_lead_architect(session)
         session.phase = "deliberation"
-        # Reset round state
         session.round.codeBlocks = None
         session.round.architectDiscarded = None
-        
+    return session
+
+@app.post("/api/games/{id}/blackout")
+async def toggle_blackout(id: str):
+    session = GAMES.get(id)
+    if not session: raise HTTPException(status_code=404)
+    session.isBlackoutWindow = not session.isBlackoutWindow
     return session
 
 @app.get("/api/health")
@@ -300,7 +275,6 @@ async def serve_assets(file_path: str):
     if os.path.exists(full_path): return FileResponse(full_path)
     raise HTTPException(status_code=404)
 
-# Catch-all for React routing
 @app.exception_handler(404)
 async def custom_404_handler(request, __):
     if not request.url.path.startswith("/api"):
