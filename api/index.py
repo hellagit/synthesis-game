@@ -154,12 +154,23 @@ async def create_game(request: Request):
 
 @app.post("/api/games/join")
 async def join_game(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except:
+        body = {}
+        
     join_code = body.get("joinCode")
+    if not join_code:
+        # Check if it's in a different field or query param
+        join_code = request.query_params.get("joinCode")
+        
     player_name = body.get("playerName", "Operative")
     
     session = next((s for s in GAMES.values() if s.joinCode == join_code), None)
-    if not session: raise HTTPException(status_code=404, detail="Game not found")
+    if not session: 
+        # Debugging: List active codes
+        active_codes = [s.joinCode for s in GAMES.values()]
+        raise HTTPException(status_code=404, detail=f"Game not found. Active codes: {active_codes}")
     
     player = Player(id=str(uuid4()), name=player_name)
     session.players.append(player)
