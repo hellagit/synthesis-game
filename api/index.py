@@ -179,8 +179,7 @@ async def get_game(id: str):
 async def start_game(id: str):
     session = GAMES.get(id)
     if not session: raise HTTPException(status_code=404)
-    if len(session.players) < 5: raise HTTPException(status_code=400, detail="Min 5 players")
-    
+    # assign_roles logic...
     assign_roles(session)
     session.deck = initialize_deck()
     session.phase = "briefing"
